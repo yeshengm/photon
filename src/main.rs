@@ -85,8 +85,8 @@ impl Vec3 {
         }
     }
 
-    fn dot(v1: Vec3, v2: Vec3) -> Vec3 {
-        Vec3::new(v1.x * v2.x, v1.y * v2.y, v1.z * v2.z)
+    fn dot(v1: Vec3, v2: Vec3) -> f32 {
+        v1.x * v2.x + v1.y * v2.y + v1.z * v2.z
     }
 
     fn cross(v1: Vec3, v2: Vec3) -> Vec3 {
@@ -209,43 +209,129 @@ impl std::ops::DivAssign<f32> for Vec3 {
     }
 }
 
-// a ray is defined by: p(t) = A + B * t
+// a ray is defined by: p(t) = origin + direction * t
 struct Ray {
-    A: Vec3,
-    B: Vec3,
+    origin: Vec3,
+    direction: Vec3,
 }
 
 impl Ray {
-    fn new(A: Vec3, B: Vec3) -> Ray {
-        Ray { A, B }
-    }
-
-    fn origin(&self) -> Vec3 {
-        self.A
-    }
-
-    fn direction(&self) -> Vec3 {
-        self.B
+    fn new(origin: Vec3, direction: Vec3) -> Ray {
+        Ray { origin, direction }
     }
 
     fn point_at(&self, t: f32) -> Vec3 {
-        self.A + self.B * t
+        self.origin + self.direction * t
     }
 }
 
 impl std::default::Default for Ray {
     fn default() -> Ray {
         Ray {
-            A: Vec3::default(),
-            B: Vec3::default(),
+            origin: Vec3::default(),
+            direction: Vec3::default(),
         }
     }
 }
 
-fn color(r: &Ray) -> Color {
-    let unit_dir = r.direction().to_unit_vector();
-    let t = 0.5 * (unit_dir.y + 1.0);
-    Color::new(1.0, 1.0, 1.0) * (1.0 - t) + Color::new(0.5, 0.7, 1.0) * t
+#[derive(Copy, Clone)]
+struct HitRecord {
+    t: f32,  // offset of ray
+    p: Vec3, // hit point
+    n: Vec3, // normal
+}
+
+trait Hittable {
+    fn hit(&self, ray: &Ray, t_min: f32, t_max: f32) -> Option<HitRecord>;
+}
+
+#[derive(Copy, Clone)]
+struct Sphere {
+    center: Vec3,
+    radius: f32,
+}
+
+impl Sphere {
+    fn new(center: Vec3, radius: f32) -> Sphere {
+        Sphere { center, radius }
+    }
+}
+
+impl Hittable for Sphere {
+    fn hit(&self, ray: &Ray, t_min: f32, t_max: f32) -> Option<HitRecord> {
+        let oc = ray.origin - self.center;
+        let a = Vec3::dot(ray.direction, ray.direction);
+        let b = Vec3::dot(oc, ray.direction);
+        let c = Vec3::dot(oc, oc) - self.radius * self.radius;
+        let discriminant = b * b - a * c;
+        if discriminant > 0.0 {
+            let tmp = (-b - f32::sqrt(discriminant)) / a;
+            if t_min < tmp && tmp < t_max {
+                return Some(HitRecord {
+                    t: tmp,
+                    p: ray.point_at(tmp),
+                    n: (ray.point_at(tmp) - self.center) / self.radius,
+                });
+            }
+            let tmp = (-b + f32::sqrt(discriminant)) / a;
+            if t_min < tmp && tmp < t_max {
+                return Some(HitRecord {
+                    t: tmp,
+                    p: ray.point_at(tmp),
+                    n: (ray.point_at(tmp) - self.center) / self.radius,
+                });
+            }
+        }
+        return None;
+    }
+}
+
+struct HittableList {
+    hittables: Vec<Box<dyn Hittable>>,
+}
+
+impl HittableList {
+    fn new(hittables: Vec<Box<dyn Hittable>>) -> HittableList {
+        HittableList { hittables }
+    }
+}
+
+impl Hittable for HittableList {
+    fn hit(&self, ray: &Ray, t_min: f32, t_max: f32) -> Option<HitRecord> {
+        let mut hit_record = HitRecord {
+            t: 0.0,
+            p: Vec3::default(),
+            n: Vec3::default(),
+        };
+        let mut hit_anything = false;
+        let mut closest_so_far = t_max;
+        for hittable in self.hittables.iter() {
+            match hittable.hit(ray, t_min, closest_so_far) {
+                Some(h) => {
+                    hit_record = h;
+                    hit_anything = true;
+                    closest_so_far = h.t;
+                }
+                None => (),
+            }
+        }
+        if hit_anything {
+            Some(hit_record)
+        } else {
+            None
+        }
+    }
+}
+
+fn color(ray: &Ray, world: &dyn Hittable) -> Color {
+    match world.hit(ray, 0.0, std::f32::MAX) {
+        Some(rec) => Color::new(rec.n.x + 1.0, rec.n.y + 1.0, rec.n.z + 1.0) * 0.5,
+        _ => {
+            let unit_dir = ray.direction.to_unit_vector();
+            let t = 0.5 * (unit_dir.y + 1.0);
+            Color::new(1.0, 1.0, 1.0) * (1.0 - t) + Color::new(0.5, 0.7, 1.0) * t
+        }
+    }
 }
 
 fn main() {
@@ -257,12 +343,18 @@ fn main() {
     let vertical = Vec3::new(0.0, 2.0, 0.0);
     let origin = Vec3::new(0.0, 0.0, 0.0);
 
+    let hittable_vec: Vec<Box<dyn Hittable>> = vec![
+        Box::new(Sphere::new(Vec3::new(0.0, 0.0, -1.0), 0.5)),
+        Box::new(Sphere::new(Vec3::new(0.0, -100.5, -1.0), 100.0)),
+    ];
+    let hittable_list = HittableList::new(hittable_vec);
+
     for j in (0..ny).rev() {
         for i in 0..nx {
             let u = i as f32 / nx as f32;
             let v = j as f32 / ny as f32;
             let ray = Ray::new(origin, lower_left_corner + horizontal * u + vertical * v);
-            let c = color(&ray) * 255.99;
+            let c = color(&ray, &hittable_list) * 255.99;
             let ir = c.r as i32;
             let ig = c.g as i32;
             let ib = c.b as i32;
